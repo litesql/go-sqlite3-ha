@@ -9,10 +9,11 @@ import (
 	"syscall"
 
 	"github.com/litesql/go-ha"
+	sqlite3ha "github.com/litesql/go-sqlite3-ha"
 )
 
 func main() {
-	c, err := ha.NewConnector("file:_examples/node1/my.db?_journal=WAL&_timeout=5000",
+	c, err := sqlite3ha.NewConnector("file:_examples/node1/my.db?_journal=WAL&_timeout=5000",
 		ha.WithName("node1"),
 		ha.WithEmbeddedNatsConfig(&ha.EmbeddedNatsConfig{
 			Port: 4222,

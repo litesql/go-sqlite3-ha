@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/litesql/go-ha"
+	_ "github.com/litesql/go-sqlite3-ha"
 )
 
 // You need to previously exec go run ./_examples/node1
 
 func main() {
-	db, err := sql.Open("ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4222&name=node2")
+	db, err := sql.Open("sqlite3-ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4222&name=node2")
 	if err != nil {
 		panic(err)
 	}
