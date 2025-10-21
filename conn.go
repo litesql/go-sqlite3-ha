@@ -178,6 +178,10 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, nodeName, filename string, publis
 	})
 }
 
+type rawer interface {
+	Raw() driver.Conn
+}
+
 func sqliteConn(conn *sql.Conn) (*sqlite3.SQLiteConn, error) {
 	var sqlite3Conn *sqlite3.SQLiteConn
 	err := conn.Raw(func(driverConn any) error {
@@ -188,8 +192,19 @@ func sqliteConn(conn *sql.Conn) (*sqlite3.SQLiteConn, error) {
 		case *sqlite3.SQLiteConn:
 			sqlite3Conn = c
 			return nil
+		case rawer:
+			switch c2 := c.Raw().(type) {
+			case *Conn:
+				sqlite3Conn = c2.SQLiteConn
+				return nil
+			case *sqlite3.SQLiteConn:
+				sqlite3Conn = c2
+				return nil
+			default:
+				return fmt.Errorf("not a sqlite3 connection: %T", c2)
+			}
 		default:
-			return fmt.Errorf("not a sqlite3 connection")
+			return fmt.Errorf("not a sqlite3 connection: %T", conn)
 		}
 	})
 	return sqlite3Conn, err
