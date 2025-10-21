@@ -46,28 +46,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 func (c *Conn) Exec(query string, args []driver.Value) (driver.Result, error) {
-	stmts, errParse := ha.Parse(context.Background(), query)
-	if errParse != nil {
-		return nil, errParse
-	}
-	var ddlCommands strings.Builder
-	if !c.disableDDLSync {
-		for _, stmt := range stmts {
-			if stmt.DDL() {
-				ddlCommands.WriteString(stmt.SourceWithIfExists())
-			}
-		}
-	}
-	if ddlCommands.Len() > 0 {
-		if err := addSQLChange(c.SQLiteConn, ddlCommands.String(), nil); err != nil {
-			return nil, err
-		}
-	}
-	res, err := c.SQLiteConn.Exec(query, args)
-	if err != nil && ddlCommands.Len() > 0 {
-		removeLastChange(c.SQLiteConn)
-	}
-	return res, err
+	return c.ExecContext(context.Background(), query, toNamedValues(args))
 }
 
 type connHooksProvider struct {
@@ -287,4 +266,12 @@ func getChange(d *sqlite3.SQLitePreUpdateData) (c ha.Change, ok bool) {
 	}
 
 	return
+}
+
+func toNamedValues(vals []driver.Value) (r []driver.NamedValue) {
+	r = make([]driver.NamedValue, len(vals))
+	for i, val := range vals {
+		r[i] = driver.NamedValue{Value: val, Ordinal: i + 1}
+	}
+	return r
 }
