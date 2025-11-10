@@ -191,10 +191,13 @@ func sqliteConn(conn *sql.Conn) (*sqlite3.SQLiteConn, error) {
 
 var (
 	changeSetSessions   = make(map[*sqlite3.SQLiteConn]*ha.ChangeSet)
-	changeSetSessionsMu sync.Mutex
+	changeSetSessionsMu sync.RWMutex
 )
 
 func addSQLChange(conn *sqlite3.SQLiteConn, sql string, args []any) error {
+	changeSetSessionsMu.RLock()
+	defer changeSetSessionsMu.RUnlock()
+
 	cs := changeSetSessions[conn]
 	if cs == nil {
 		return errors.New("no changeset session for the connection")
@@ -208,6 +211,9 @@ func addSQLChange(conn *sqlite3.SQLiteConn, sql string, args []any) error {
 }
 
 func removeLastChange(conn *sqlite3.SQLiteConn) error {
+	changeSetSessionsMu.RLock()
+	defer changeSetSessionsMu.RUnlock()
+
 	cs := changeSetSessions[conn]
 	if cs == nil {
 		return errors.New("no changeset session for the connection")
