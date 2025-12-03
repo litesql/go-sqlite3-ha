@@ -105,15 +105,15 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, nodeName, filename string, publis
 		if !ok {
 			return
 		}
-		rows, err := sconn.Query(fmt.Sprintf("SELECT name, type FROM %s.PRAGMA_TABLE_INFO('%s')", change.Database, change.Table), nil)
+		rows, err := sconn.Query(fmt.Sprintf("SELECT name, type, pk FROM %s.PRAGMA_TABLE_INFO('%s') ORDER BY cid", change.Database, change.Table), nil)
 		if err != nil {
 			slog.Error("failed to read columns", "error", err, "database", change.Database, "table", change.Table)
 			return
 		}
 		defer rows.Close()
-		var columns, types []string
+		var columns, types, pkColumns []string
 		for {
-			dataRow := []driver.Value{new(string), new(string)}
+			dataRow := []driver.Value{new(string), new(string), new(int64)}
 
 			err := rows.Next(dataRow)
 			if err != nil {
@@ -124,13 +124,18 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, nodeName, filename string, publis
 			}
 			if v, ok := dataRow[0].(string); ok {
 				columns = append(columns, v)
+			} else {
+				continue
 			}
 			if v, ok := dataRow[1].(string); ok {
 				types = append(types, v)
 			}
+			if v, ok := dataRow[2].(int64); ok && v > 0 {
+				pkColumns = append(pkColumns, dataRow[0].(string))
+			}
 		}
 		change.Columns = columns
-
+		change.PKColumns = pkColumns
 		for i, t := range types {
 			if t != "BLOB" {
 				if i < len(change.OldValues) && change.OldValues[i] != nil {
