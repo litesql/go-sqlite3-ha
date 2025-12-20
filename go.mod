@@ -3,7 +3,7 @@ module github.com/litesql/go-sqlite3-ha
 go 1.25
 
 require (
-	github.com/litesql/go-ha v0.2.0
+	github.com/litesql/go-ha v0.3.1
 	github.com/litesql/go-sqlite3 v1.14.34
 )
 
@@ -12,6 +12,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-tpm v0.9.7 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect

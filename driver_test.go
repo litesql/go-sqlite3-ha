@@ -11,7 +11,7 @@ import (
 
 func TestConnector(t *testing.T) {
 	pub := new(fakePublisher)
-	connector, err := sqlite3ha.NewConnector("file:/test.db?vfs=memdb", ha.WithCDCPublisher(pub))
+	connector, err := sqlite3ha.NewConnector("file:/test.db?vfs=memdb", ha.WithReplicationPublisher(pub))
 	if err != nil {
 		t.Fatal(err)
 	}
