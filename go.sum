@@ -34,8 +34,8 @@ github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORN
 github.com/kr/pty v1.1.1/go.mod h1:pFQYn66WHrOpPYNljwOMqo10TkYh1fy3cYio2l3bCsQ=
 github.com/kr/text v0.1.0/go.mod h1:4Jbv+DJW3UT/LiOwJeYQe1efqtUx/iVham/4vfdArNI=
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
-github.com/litesql/go-ha v0.4.5 h1:jeVLgTbBaVFJA+tzdQQfyz4D+9NTbOQlgbV+rrYFbTI=
-github.com/litesql/go-ha v0.4.5/go.mod h1:fZJswnZV1lzHG0iSm2iBT7149Q7TL8j1Tsp4O1l/WOM=
+github.com/litesql/go-ha v0.4.8 h1:1kUmzrU0ZhJIi6FWtmJccdftsglqenAcd9gBcrtN5yM=
+github.com/litesql/go-ha v0.4.8/go.mod h1:VVqZKifnkGIy7SWxIR33wBs6YGDf2sn9W983hYoaZVw=
 github.com/litesql/go-sqlite3 v1.14.35 h1:zf9KdWzs3bPTLUr9L45seJCg5Dn2RVB2A3XOvrWIzf8=
 github.com/litesql/go-sqlite3 v1.14.35/go.mod h1:ThgPfEIsqCjUT/jqKFiFcZ3+gKLpqmzQEM5ZcDc7M5g=
 github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 h1:KGuD/pM2JpL9FAYvBrnBBeENKZNh6eNtjqytV6TYjnk=
