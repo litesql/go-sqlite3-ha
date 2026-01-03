@@ -15,7 +15,7 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 	}
 	defer srcConn.Close()
 
-	sqliteSrcConn, err := sqliteConn(srcConn)
+	sqliteSrcConn, err := haSqliteConn(srcConn)
 	if err != nil {
 		return err
 	}
@@ -46,12 +46,12 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 	}
 	defer destConn.Close()
 
-	sqliteDestConn, err := sqliteConn(destConn)
+	sqliteDestConn, err := haSqliteConn(destConn)
 	if err != nil {
 		return err
 	}
 
-	bkp, err := sqliteDestConn.Backup("main", sqliteSrcConn, "main")
+	bkp, err := sqliteDestConn.Backup("main", sqliteSrcConn.SQLiteConn, "main")
 	if err != nil {
 		return err
 	}

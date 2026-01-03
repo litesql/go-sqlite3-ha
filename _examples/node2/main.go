@@ -12,11 +12,16 @@ import (
 // You need to previously exec go run ./_examples/node1
 
 func main() {
-	db, err := sql.Open("sqlite3-ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4222&name=node2")
+	db, err := sql.Open("sqlite3-ha", "file:_examples/node2/my.db?_journal=WAL&_timeout=5000&replicationURL=nats://localhost:4222&name=node2&leaderProvider=static:localhost:5000")
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
+
+	_, err = db.Exec("INSERT INTO users(name) values('grpc leader redirect')")
+	if err != nil {
+		panic(err)
+	}
 
 	time.Sleep(2 * time.Second) // wait for sync
 	var name string
