@@ -332,6 +332,7 @@ func (c *Conn) start() error {
 				c.currentRedirectTarget = ""
 				slog.Debug("failed to receive message", "error", err)
 				c.Close()
+				return
 			}
 			c.resCh <- msg
 		}
@@ -344,6 +345,7 @@ func (c *Conn) start() error {
 				c.currentRedirectTarget = ""
 				slog.Debug("failed to send message", "error", err)
 				c.Close()
+				return
 			}
 		}
 	}()
