@@ -326,12 +326,13 @@ func (c *Conn) start() error {
 			msg, err := stream.Recv()
 			if err == io.EOF {
 				c.currentRedirectTarget = ""
+				c.activeTransaction = false
 				return // Stream closed
 			}
 			if err != nil {
 				c.currentRedirectTarget = ""
+				c.activeTransaction = false
 				slog.Debug("failed to receive message", "error", err)
-				c.Close()
 				return
 			}
 			c.resCh <- msg
@@ -343,8 +344,8 @@ func (c *Conn) start() error {
 			err := stream.Send(req)
 			if err != nil {
 				c.currentRedirectTarget = ""
+				c.activeTransaction = false
 				slog.Debug("failed to send message", "error", err)
-				c.Close()
 				return
 			}
 		}
