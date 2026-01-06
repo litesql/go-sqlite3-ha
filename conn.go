@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,12 @@ import (
 )
 
 var ErrTimedOut = errors.New("Timed out")
+
+var queryRouterHintMatcher = regexp.MustCompile(`(?i)/\*\s*queryRouter=(.*?)\s*\*/`).FindStringSubmatch
+
+type contextKey int
+
+const ignoreQueryRouterKey contextKey = iota
 
 type Conn struct {
 	*sqlite3.SQLiteConn
@@ -40,6 +47,8 @@ type Conn struct {
 
 	txseqTracker ha.TxSeqTracker
 	timeout      time.Duration
+
+	queryRouter *regexp.Regexp
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -125,9 +134,6 @@ func (c *Conn) Exec(query string, args []driver.Value) (driver.Result, error) {
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	slog.Debug("QuerContext", "query", query, "enableRedirect", c.enableRedirect)
-	if c.leader.IsLeader() {
-		return c.SQLiteConn.QueryContext(ctx, query, args)
-	}
 	if query == "SELECT received_seq FROM ha_stats WHERE subject = ?" {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
@@ -143,7 +149,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 			break
 		}
 	}
-	if (modifies || c.activeTransaction) && c.enableRedirect {
+	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
 		return c.redirectQuery(ctx, query, args)
 	}
 
@@ -164,7 +170,27 @@ LOOP:
 		case <-ticker.C:
 		}
 	}
+	if len(stmts) == 1 && !c.ignoreQueryRouter(ctx) {
+		qr := c.queryRouter
+		queryRouterExp := queryRouterHintMatcher(query)
+		if len(queryRouterExp) == 2 {
+			if exp, err := regexp.Compile(strings.TrimSpace(queryRouterExp[1])); err == nil {
+				qr = exp
+			}
+		}
+		if qr != nil && qr.String() != "self" {
+			return c.crossShardQuery(ctx, query, args, qr, stmts[0])
+		}
+	}
 	return c.SQLiteConn.QueryContext(ctx, query, args)
+}
+
+func (c *Conn) ignoreQueryRouter(ctx context.Context) bool {
+	val := ctx.Value(ignoreQueryRouterKey)
+	if val == nil {
+		return false
+	}
+	return val.(bool)
 }
 
 func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {

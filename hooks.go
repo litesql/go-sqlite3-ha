@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type connHooksProvider struct {
 	leader               ha.LeaderProvider
 	txseqTrackerProvider ha.TxSeqTrackerProvider
 	grpcTimeout          time.Duration
+	queryRouter          *regexp.Regexp
 }
 
 func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
@@ -36,6 +38,7 @@ func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
 		txseqTrackerProvider: cfg.TxSeqTrackerProvider,
 		leader:               cfg.Leader,
 		grpcTimeout:          cfg.GrpcTimeout,
+		queryRouter:          cfg.QueryRouter,
 	}
 }
 
@@ -52,6 +55,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
 		resCh:          make(chan *sqlv1.QueryResponse),
 		txseqTracker:   p.txseqTrackerProvider(),
 		timeout:        p.grpcTimeout,
+		queryRouter:    p.queryRouter,
 	}
 	return conn, conn.start()
 }
