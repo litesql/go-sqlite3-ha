@@ -24,7 +24,7 @@ import (
 
 var ErrTimedOut = errors.New("Timed out")
 
-var queryRouterHintMatcher = regexp.MustCompile(`(?i)/\*\s*queryRouter=(.*?)\s*\*/`).FindStringSubmatch
+var queryRouterHintMatcher = regexp.MustCompile(`(?i)/\*\+\s*db=(.*?)\s*\*/`).FindStringSubmatch
 
 type contextKey int
 
