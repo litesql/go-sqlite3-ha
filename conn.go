@@ -69,7 +69,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 			break
 		}
 	}
-	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
+	if c.redirectToGrpc(modifies) {
 		slog.Debug("Redirecting", "to", c.leader.RedirectTarget(), "query", query)
 		params := make([]*sqlv1.NamedValue, len(args))
 		for i, arg := range args {
@@ -157,7 +157,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 			break
 		}
 	}
-	if (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() {
+	if c.redirectToGrpc(modifies) {
 		return c.redirectQuery(ctx, query, args)
 	}
 
@@ -208,7 +208,7 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 }
 
 func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	if c.enableRedirect && !c.leader.IsLeader() {
+	if c.redirectToGrpc(true) {
 		ctx, cancel := context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 		select {
@@ -329,6 +329,10 @@ func (c *Conn) Close() error {
 		c.grpcClientConn.Close()
 	}
 	return c.SQLiteConn.Close()
+}
+
+func (c *Conn) redirectToGrpc(modifies bool) bool {
+	return (modifies || c.activeTransaction) && c.enableRedirect && !c.leader.IsLeader() && c.currentRedirectTarget != ""
 }
 
 func (c *Conn) start() error {
