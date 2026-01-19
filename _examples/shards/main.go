@@ -16,8 +16,8 @@ func main() {
 	defer db1.Close()
 
 	_, err = db1.ExecContext(context.Background(), `
-		CREATE TABLE IF NOT EXISTS users(name TEXT);
-		INSERT INTO users VALUES('Shard 1');
+		CREATE TABLE IF NOT EXISTS users(name TEXT, x REAL);
+		INSERT INTO users VALUES('Shard 1', 42);
 	`)
 	if err != nil {
 		panic(err)
@@ -30,14 +30,15 @@ func main() {
 	defer db2.Close()
 
 	_, err = db2.ExecContext(context.Background(), `
-		CREATE TABLE IF NOT EXISTS users(name TEXT);
-		INSERT INTO users VALUES('Shard 2');
+		CREATE TABLE IF NOT EXISTS users(name TEXT, x REAL);
+		INSERT INTO users VALUES('Shard 2', 50);
+		INSERT INTO users VALUES('Shard 1', 14);
 	`)
 	if err != nil {
 		panic(err)
 	}
 	//query on all shards
-	rows, err := db2.QueryContext(context.Background(), "SELECT rowid, name FROM users ORDER BY rowid DESC limit 5")
+	rows, err := db2.QueryContext(context.Background(), "SELECT rowid, name FROM users ORDER BY rowid DESC LIMIT 5")
 	if err != nil {
 		panic(err)
 	}
@@ -57,7 +58,7 @@ func main() {
 	}
 
 	// override queryRouter using SQL hint /*+ db=DSN */
-	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=shard1 */ rowid, name FROM users ORDER BY rowid DESC")
+	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=shard1 */ rowid, name FROM users")
 	if err != nil {
 		panic(err)
 	}
@@ -71,7 +72,8 @@ func main() {
 		}
 		fmt.Printf("ID=%d Name=%s\n", id, name)
 	}
-	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=.* */ avg(rowid), count(*), min(rowid), max(rowid+1), name FROM users GROUP BY name")
+
+	rows, err = db2.QueryContext(context.Background(), "SELECT /*+ db=.* */ avg(x), count(*), min(rowid), max(rowid+1), name FROM users GROUP BY name")
 	if err != nil {
 		panic(err)
 	}
