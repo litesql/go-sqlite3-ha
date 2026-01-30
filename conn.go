@@ -14,7 +14,7 @@ import (
 
 	"github.com/litesql/go-ha"
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
-	hagrpc "github.com/litesql/go-ha/grpc"
+	haconnect "github.com/litesql/go-ha/connect"
 	"github.com/litesql/go-sqlite3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -74,7 +74,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		slog.Debug("Redirecting", "to", c.leader.RedirectTarget(), "query", query)
 		params := make([]*sqlv1.NamedValue, len(args))
 		for i, arg := range args {
-			val, err := hagrpc.ToAnypb(arg.Value)
+			val, err := haconnect.ToAnypb(arg.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -242,7 +242,7 @@ func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.Na
 	slog.Debug("Redirecting query", "to", c.leader.RedirectTarget())
 	params := make([]*sqlv1.NamedValue, len(args))
 	for i, arg := range args {
-		val, err := hagrpc.ToAnypb(arg.Value)
+		val, err := haconnect.ToAnypb(arg.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -470,7 +470,7 @@ func (r *rows) Next(dest []driver.Value) error {
 	}
 	row := r.data.Rows[r.index]
 	for i, val := range row.GetValues() {
-		dest[i] = hagrpc.FromAnypb(val)
+		dest[i] = haconnect.FromAnypb(val)
 	}
 	r.index++
 	return nil
