@@ -57,7 +57,6 @@ type Conn struct {
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	slog.Debug("ExecContext", "query", query, "enableRedirect", c.enableRedirect)
 	stmts, errParse := ha.Parse(ctx, query)
 	if errParse != nil {
 		return nil, errParse
@@ -142,7 +141,6 @@ func (c *Conn) IsValid() bool {
 }
 
 func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	slog.Debug("QuerContext", "query", query, "enableRedirect", c.enableRedirect)
 	if query == "SELECT received_seq FROM ha_stats WHERE subject = ?" {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
@@ -239,7 +237,7 @@ func (c *Conn) Begin() (driver.Tx, error) {
 }
 
 func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	slog.Debug("Redirecting query", "to", c.leader.RedirectTarget())
+	slog.Debug("Redirecting query", "to", c.leader.RedirectTarget(), "query", query)
 	params := make([]*sqlv1.NamedValue, len(args))
 	for i, arg := range args {
 		val, err := haconnect.ToAnypb(arg.Value)
@@ -326,10 +324,11 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 }
 
 func (c *Conn) Close() error {
+	var err error
 	if c.grpcClientConn != nil {
-		c.grpcClientConn.Close()
+		err = c.grpcClientConn.Close()
 	}
-	return c.SQLiteConn.Close()
+	return errors.Join(err, c.SQLiteConn.Close())
 }
 
 func (c *Conn) redirectToGrpc(modifies bool) bool {
