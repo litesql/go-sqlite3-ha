@@ -18,8 +18,10 @@ import (
 	haconnect "github.com/litesql/go-ha/connect"
 	"github.com/litesql/go-sqlite3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var ErrTimedOut = errors.New("Timed out")
@@ -385,6 +387,37 @@ func (c *Conn) start() error {
 	go func() {
 		sesisonTarget := target
 		for {
+			msg, err := stream.Recv()
+			if err == io.EOF {
+				if c.currentRedirectTarget == sesisonTarget {
+					c.invalid = true
+					c.currentRedirectTarget = ""
+				}
+				return // Stream closed
+			}
+			if err != nil {
+				if c.currentRedirectTarget == sesisonTarget {
+					c.invalid = true
+					c.currentRedirectTarget = ""
+				}
+				st, ok := status.FromError(err)
+				if ok && st.Code() != codes.Canceled {
+					slog.Debug("failed to receive message", "error", err)
+					go func() {
+						c.resCh <- &sqlv1.QueryResponse{
+							Error: err.Error(),
+						}
+					}()
+				}
+				return
+			}
+			c.resCh <- msg
+		}
+	}()
+
+	go func() {
+		sesisonTarget := target
+		for {
 			select {
 			case <-time.After(25 * time.Second):
 				err := stream.Send(&sqlv1.QueryRequest{
@@ -413,21 +446,6 @@ func (c *Conn) start() error {
 					}
 					return
 				}
-			}
-		}
-	}()
-
-	go func() {
-		sesisonTarget := target
-		for req := range c.reqCh {
-			err := stream.Send(req)
-			if err != nil {
-				slog.Debug("failed to send message", "error", err)
-				if c.currentRedirectTarget == sesisonTarget {
-					c.invalid = true
-					c.currentRedirectTarget = ""
-				}
-				return
 			}
 		}
 	}()

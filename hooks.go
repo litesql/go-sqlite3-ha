@@ -1,6 +1,7 @@
 package sqlite3ha
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -21,7 +22,7 @@ type connHooksProvider struct {
 	replicationID        string
 	disableDDLSync       bool
 	publisher            ha.Publisher
-	cdc                  ha.CDCPublisher
+	cdcPublisher         ha.CDCPublisher
 	leader               ha.LeaderProvider
 	txseqTrackerProvider ha.TxSeqTrackerProvider
 	grpcTimeout          time.Duration
@@ -36,7 +37,7 @@ func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
 		replicationID:        cfg.ReplicationID,
 		disableDDLSync:       cfg.DisableDDLSync,
 		publisher:            cfg.Publisher,
-		cdc:                  cfg.CDC,
+		cdcPublisher:         cfg.CDC,
 		txseqTrackerProvider: cfg.TxSeqTrackerProvider,
 		leader:               cfg.Leader,
 		grpcTimeout:          cfg.GrpcTimeout,
@@ -46,9 +47,31 @@ func newConnHooksProvider(cfg ha.ConnHooksConfig) *connHooksProvider {
 	}
 }
 
-func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
+func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector) (driver.Conn, error) {
 	sqliteConn, _ := c.(*sqlite3.SQLiteConn)
-	enableCDCHooks(sqliteConn, p.nodeName, p.replicationID, p.publisher, p.cdc)
+	err := sqliteConn.RegisterFunc("ha_undo", func(seq int64) string {
+		if seq < 0 {
+			return "param must be non-negative"
+		}
+		err := connector.UndoBySeq(context.Background(), uint64(seq))
+		if err != nil {
+			return err.Error()
+		}
+		if seq == 0 {
+			return "undone last transaction"
+		}
+		return fmt.Sprintf("undone transactions until stream sequence %d", seq)
+	}, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register ha_undo function: %w", err)
+	}
+	err = sqliteConn.CreateModule("ha_history", &historyModule{
+		connector: connector,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ha_history vtab module: %w", err)
+	}
+	enableCDCHooks(sqliteConn, p.nodeName, p.replicationID, p.publisher, p.cdcPublisher)
 	conn := &Conn{
 		SQLiteConn:     sqliteConn,
 		disableDDLSync: p.disableDDLSync,
@@ -63,6 +86,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn) (driver.Conn, error) {
 		insecure:       p.grpcInsecure,
 		queryRouter:    p.queryRouter,
 	}
+
 	return conn, conn.start()
 }
 
@@ -83,7 +107,7 @@ func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	enableCDCHooks(sconn.SQLiteConn, p.nodeName, p.replicationID, p.publisher, p.cdc)
+	enableCDCHooks(sconn.SQLiteConn, p.nodeName, p.replicationID, p.publisher, p.cdcPublisher)
 	sconn.enableRedirect = true
 	return sconn.start()
 }
