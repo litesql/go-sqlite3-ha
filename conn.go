@@ -60,16 +60,22 @@ type Conn struct {
 }
 
 func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	stmts, errParse := ha.Parse(ctx, query)
-	if errParse != nil {
-		return nil, errParse
-	}
+	var (
+		modifies bool
+		stmts    []*ha.Statement
+	)
+	if c.redirectToGrpc(true) || !c.disableDDLSync {
+		var err error
+		stmts, err = ha.Parse(ctx, query)
+		if err != nil {
+			return nil, err
+		}
 
-	var modifies bool
-	for _, stmt := range stmts {
-		if stmt.ModifiesDatabase() {
-			modifies = true
-			break
+		for _, stmt := range stmts {
+			if stmt.ModifiesDatabase() {
+				modifies = true
+				break
+			}
 		}
 	}
 	if c.redirectToGrpc(modifies) {
@@ -124,6 +130,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		}
 	}
 	if ddlCommands.Len() > 0 {
+		clearTableSchemaCache(c.replicationID)
 		if err := addSQLChange(c.SQLiteConn, ddlCommands.String(), nil); err != nil {
 			return nil, err
 		}
@@ -147,16 +154,22 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if query == "SELECT received_seq FROM ha_stats WHERE subject = ?" {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
-	stmts, errParse := ha.Parse(ctx, query)
-	if errParse != nil {
-		return nil, errParse
-	}
+	var (
+		modifies bool
+		stmts    []*ha.Statement
+	)
+	if c.redirectToGrpc(true) || !c.disableDDLSync {
+		var err error
+		stmts, err = ha.Parse(ctx, query)
+		if err != nil {
+			return nil, err
+		}
 
-	var modifies bool
-	for _, stmt := range stmts {
-		if stmt.ModifiesDatabase() {
-			modifies = true
-			break
+		for _, stmt := range stmts {
+			if stmt.ModifiesDatabase() {
+				modifies = true
+				break
+			}
 		}
 	}
 	if c.redirectToGrpc(modifies) {
