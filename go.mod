@@ -3,13 +3,13 @@ module github.com/litesql/go-sqlite3-ha
 go 1.25.0
 
 require (
-	github.com/litesql/go-ha v0.10.10
+	github.com/litesql/go-ha v0.11.0
 	github.com/litesql/go-sqlite3 v1.14.45
 	google.golang.org/grpc v1.80.0
 )
 
 require (
-	connectrpc.com/connect v1.19.1 // indirect
+	connectrpc.com/connect v1.19.2 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.7.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
@@ -29,6 +29,6 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
