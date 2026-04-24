@@ -14,6 +14,7 @@ import (
 
 	"github.com/litesql/go-ha"
 	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
+	haconnect "github.com/litesql/go-ha/connect"
 	"github.com/litesql/go-sqlite3"
 )
 
@@ -53,7 +54,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 		if seq < 0 {
 			return "param must be non-negative"
 		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq))
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterNone)
 		if err != nil {
 			return err.Error()
 		}
@@ -64,6 +65,38 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 	}, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register ha_undo function: %w", err)
+	}
+	err = sqliteConn.RegisterFunc("ha_undoe", func(seq int64) string {
+		if seq < 0 {
+			return "param must be non-negative"
+		}
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterEntity)
+		if err != nil {
+			return err.Error()
+		}
+		if seq == 0 {
+			return "undone last transaction"
+		}
+		return fmt.Sprintf("undone entity changes until stream sequence %d", seq)
+	}, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register ha_undoe function: %w", err)
+	}
+	err = sqliteConn.RegisterFunc("ha_undot", func(seq int64) string {
+		if seq < 0 {
+			return "param must be non-negative"
+		}
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterTransaction)
+		if err != nil {
+			return err.Error()
+		}
+		if seq == 0 {
+			return "undone last transaction"
+		}
+		return fmt.Sprintf("undone transactions until stream sequence %d", seq)
+	}, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register ha_undot function: %w", err)
 	}
 	err = sqliteConn.CreateModule("ha_history", &historyModule{
 		connector: connector,
