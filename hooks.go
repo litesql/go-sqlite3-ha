@@ -54,7 +54,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 		if seq < 0 {
 			return "param must be non-negative"
 		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterNone)
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterNone, nil)
 		if err != nil {
 			return err.Error()
 		}
@@ -70,7 +70,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 		if seq < 0 {
 			return "param must be non-negative"
 		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterEntity)
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterEntity, nil)
 		if err != nil {
 			return err.Error()
 		}
@@ -86,7 +86,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 		if seq < 0 {
 			return "param must be non-negative"
 		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterTransaction)
+		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterTransaction, nil)
 		if err != nil {
 			return err.Error()
 		}
