@@ -117,6 +117,7 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 		timeout:        p.grpcTimeout,
 		token:          p.grpcToken,
 		insecure:       p.grpcInsecure,
+		proxiedDB:      connector.ProxiedDB(),
 		queryRouter:    p.queryRouter,
 	}
 
