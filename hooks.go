@@ -202,11 +202,10 @@ func getTableSchema(sconn *sqlite3.SQLiteConn, replicationID string, database st
 }
 
 func enableCDCHooks(sconn *sqlite3.SQLiteConn, nodeName, replicationID string, publisher ha.Publisher, cdc ha.CDCPublisher) {
-	changeSetSessionsMu.Lock()
-	defer changeSetSessionsMu.Unlock()
-
 	cs := ha.NewChangeSet(nodeName, replicationID)
+	changeSetSessionsMu.Lock()
 	changeSetSessions[sconn] = cs
+	changeSetSessionsMu.Unlock()
 	sconn.RegisterPreUpdateHook(func(d sqlite3.SQLitePreUpdateData) {
 		change, ok := getChange(&d)
 		if !ok {
