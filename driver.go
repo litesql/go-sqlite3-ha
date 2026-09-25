@@ -29,7 +29,7 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 }
 
 func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
-	dsn, opts, err := ha.NameToOptions(name)
+	dsn, opts, err := ha.NameToOptions(name, "sqlite3")
 	if err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
@@ -45,7 +45,7 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 }
 
 func NewConnector(name string, opts ...ha.Option) (*ha.Connector, error) {
-	dsn, nameOpts, err := ha.NameToOptions(name)
+	dsn, nameOpts, err := ha.NameToOptions(name, "sqlite3")
 	if err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
