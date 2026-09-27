@@ -199,7 +199,7 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 
 	sconn.RegisterCommitHook(func() int {
 		if err := cs.Send(connector.Publisher()); err != nil {
-			slog.Error("failed to send changeset", "error", err, "len", len(cs.Changes), "changeset", cs, "pub", fmt.Sprintf("%T", connector.Publisher()))
+			slog.Error("failed to send changeset", "error", err, "pub", fmt.Sprintf("%T", connector.Publisher()))
 			return 1
 		}
 		if connector.CDCPublisher() != nil {
