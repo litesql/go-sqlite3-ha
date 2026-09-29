@@ -172,6 +172,9 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 	changeSetSessions[sconn] = cs
 	changeSetSessionsMu.Unlock()
 	sconn.RegisterPreUpdateHook(func(d sqlite3.SQLitePreUpdateData) {
+		if d.TableName == ha.TwoPhaseCommitDecisionTable {
+			return
+		}
 		change, ok := getChange(&d)
 		if !ok {
 			return
@@ -198,6 +201,9 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 	})
 
 	sconn.RegisterCommitHook(func() int {
+		if _, ok := connector.Publisher().(ha.TwoPhaseCommitPreparer); ok {
+			return 0
+		}
 		if err := cs.Send(connector.Publisher()); err != nil {
 			slog.Error("failed to send changeset", "error", err, "pub", fmt.Sprintf("%T", connector.Publisher()))
 			return 1
@@ -251,6 +257,40 @@ func removeLastChange(conn *sqlite3.SQLiteConn) error {
 		cs.Changes = cs.Changes[:len(cs.Changes)-1]
 	}
 	return nil
+}
+
+func snapshotChangeSet(conn *sqlite3.SQLiteConn) *ha.ChangeSet {
+	changeSetSessionsMu.RLock()
+	defer changeSetSessionsMu.RUnlock()
+
+	cs := changeSetSessions[conn]
+	if cs == nil {
+		return nil
+	}
+	snapshot := *cs
+	snapshot.Changes = append([]ha.Change(nil), cs.Changes...)
+	return &snapshot
+}
+
+func clearChangeSet(conn *sqlite3.SQLiteConn) {
+	changeSetSessionsMu.RLock()
+	defer changeSetSessionsMu.RUnlock()
+	if cs := changeSetSessions[conn]; cs != nil {
+		cs.Clear()
+	}
+}
+
+func publishChangeSetCDC(connector *ha.Connector, cs *ha.ChangeSet) {
+	if connector.CDCPublisher() == nil {
+		return
+	}
+	data := cs.DebeziumData()
+	if len(data) == 0 {
+		return
+	}
+	if err := connector.CDCPublisher().Publish(data); err != nil {
+		slog.Error("failed to send cdc after local commit", "error", err)
+	}
 }
 
 func convert(src any) any {
