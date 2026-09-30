@@ -171,7 +171,7 @@ func TestTwoPhaseCommitKeepsLocalDecisionOnRemoteFailure(t *testing.T) {
 }
 
 func TestTwoPhaseCommitPublisherLifecycle(t *testing.T) {
-	pub, err := ha.NewTwoPhaseCommitPublisher(nil, time.Second, nil)
+	pub, err := ha.NewTwoPhaseCommitPublisher(nil, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
