@@ -172,7 +172,7 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 	changeSetSessions[sconn] = cs
 	changeSetSessionsMu.Unlock()
 	sconn.RegisterPreUpdateHook(func(d sqlite3.SQLitePreUpdateData) {
-		if d.TableName == ha.TwoPhaseCommitDecisionTable {
+		if d.TableName == ha.TwoPhaseCommitDecisionTable || d.TableName == ha.OutboxTable {
 			return
 		}
 		change, ok := getChange(&d)
