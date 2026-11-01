@@ -22,8 +22,12 @@ type connHooksProvider struct {
 
 func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector) (driver.Conn, error) {
 	p.Connector = connector
+	telemetry, err := defaultSQLiteTelemetry()
+	if err != nil {
+		return nil, fmt.Errorf("initialize SQLite telemetry: %w", err)
+	}
 	sqliteConn, _ := c.(*sqlite3.SQLiteConn)
-	err := sqliteConn.RegisterFunc("ha_undo", func(seq int64) string {
+	err = sqliteConn.RegisterFunc("ha_undo", func(seq int64) string {
 		if seq < 0 {
 			return "param must be non-negative"
 		}
@@ -77,16 +81,16 @@ func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ha_history vtab module: %w", err)
 	}
-	enableCDCHooks(sqliteConn, p.Connector)
 	conn := &Conn{
 		SQLiteConn:     sqliteConn,
 		connector:      p.Connector,
+		telemetry:      telemetry,
 		enableRedirect: true,
 		reqCh:          make(chan *sqlv1.QueryRequest),
 		resCh:          make(chan *sqlv1.QueryResponse),
 		txseqTracker:   p.Subscriber(),
 	}
-
+	enableCDCHooks(conn, p.Connector)
 	return conn, conn.start()
 }
 
@@ -107,7 +111,7 @@ func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	enableCDCHooks(sconn.SQLiteConn, p.Connector)
+	enableCDCHooks(sconn, p.Connector)
 	sconn.enableRedirect = true
 	return sconn.start()
 }
@@ -166,10 +170,10 @@ func getTableSchema(sconn *sqlite3.SQLiteConn, replicationID string, database st
 
 }
 
-func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
+func enableCDCHooks(sconn *Conn, connector *ha.Connector) {
 	cs := ha.NewChangeSet(connector.NodeName(), connector.ReplicationID())
 	changeSetSessionsMu.Lock()
-	changeSetSessions[sconn] = cs
+	changeSetSessions[sconn.SQLiteConn] = cs
 	changeSetSessionsMu.Unlock()
 	sconn.RegisterPreUpdateHook(func(d sqlite3.SQLitePreUpdateData) {
 		if d.TableName == ha.TwoPhaseCommitDecisionTable || d.TableName == ha.OutboxTable {
@@ -179,7 +183,7 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 		if !ok {
 			return
 		}
-		schema, err := getTableSchema(sconn, connector.ReplicationID(), change.Database, change.Table)
+		schema, err := getTableSchema(sconn.SQLiteConn, connector.ReplicationID(), change.Database, change.Table)
 		if err != nil {
 			slog.Error("failed to read columns", "error", err, "database", change.Database, "table", change.Table)
 			return
@@ -204,7 +208,7 @@ func enableCDCHooks(sconn *sqlite3.SQLiteConn, connector *ha.Connector) {
 		if _, ok := connector.Publisher().(ha.TwoPhaseCommitPreparer); ok {
 			return 0
 		}
-		if err := cs.Send(connector.Publisher()); err != nil {
+		if err := cs.Send(sconn.Context(), connector.Publisher()); err != nil {
 			slog.Error("failed to send changeset", "error", err, "pub", fmt.Sprintf("%T", connector.Publisher()))
 			return 1
 		}

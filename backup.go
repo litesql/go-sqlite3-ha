@@ -8,7 +8,15 @@ import (
 	"os"
 )
 
-func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
+func Backup(ctx context.Context, db *sql.DB, w io.Writer) (retErr error) {
+	telemetry, err := defaultSQLiteTelemetry()
+	if err != nil {
+		return fmt.Errorf("initialize SQLite telemetry: %w", err)
+	}
+	ctx, finish := telemetry.startBackup(ctx)
+	var written int64
+	defer func() { finish(retErr, written) }()
+
 	srcConn, err := db.Conn(ctx)
 	if err != nil {
 		return err
@@ -25,7 +33,12 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		_, err = w.Write(b)
+		n, writeErr := w.Write(b)
+		written = int64(n)
+		if writeErr == nil && n != len(b) {
+			writeErr = io.ErrShortWrite
+		}
+		err = writeErr
 		return err
 	}
 	dest, err := os.CreateTemp("", "ha-*.db")
@@ -87,6 +100,6 @@ func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
 	}
 	defer final.Close()
 
-	_, err = io.Copy(w, final)
+	written, err = io.Copy(w, final)
 	return err
 }

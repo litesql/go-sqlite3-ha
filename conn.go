@@ -41,8 +41,11 @@ type ProxiedQuerierExecer interface {
 
 type Conn struct {
 	*sqlite3.SQLiteConn
-	connector *ha.Connector
 
+	context context.Context
+
+	connector      *ha.Connector
+	telemetry      *sqliteTelemetry
 	enableRedirect bool
 
 	currentRedirectTarget string
@@ -64,7 +67,17 @@ type Conn struct {
 	latestTransactionPosition uint64
 }
 
-func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+func (c *Conn) Context() context.Context {
+	if c.context == nil {
+		return context.Background()
+	}
+	return c.context
+}
+
+func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (result driver.Result, retErr error) {
+	ctx, finish := c.telemetry.startOperation(ctx, "exec")
+	defer func() { finish(retErr) }()
+	c.context = ctx
 	var (
 		modifies bool
 		stmts    []*ha.Statement
@@ -83,6 +96,7 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 					return res, nil
 				} else if c.connector.ProxiedDB() != nil {
 					slog.Debug("invalid sqlite syntax, redirecting to proxied db", "error", err)
+					setOperationRoute(ctx, "proxied_db")
 					res, err2 := c.proxiedQuerierExecer().ExecContext(ctx, query, toSqlValues(args)...)
 					if err2 != nil {
 						return nil, errors.Join(err, err2)
@@ -128,11 +142,13 @@ func (c *Conn) ExecContext(ctx context.Context, query string, args []driver.Name
 		err error
 	)
 	if c.connector.ProxiedDB() != nil && modifies && !ha.LocalDB(ctx) {
+		setOperationRoute(ctx, "proxied_db")
 		res, err = c.proxiedQuerierExecer().ExecContext(ctx, query, toSqlValues(args)...)
 		if err == nil {
 			c.updateProxiedPosition(ctx)
 		}
 	} else if modifies && !c.activeTransaction && !ha.LocalDB(ctx) && c.twoPhaseEnabled() {
+		setOperationRoute(ctx, "local_2pc")
 		res, err = c.execLocalTwoPhase(ctx, query, args)
 	} else {
 		res, err = c.SQLiteConn.ExecContext(ctx, query, args)
@@ -151,7 +167,10 @@ func (c *Conn) IsValid() bool {
 	return !c.invalid
 }
 
-func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (result driver.Rows, retErr error) {
+	ctx, finish := c.telemetry.startOperation(ctx, "query")
+	defer func() { finish(retErr) }()
+	c.context = ctx
 	if ha.LocalDB(ctx) {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
@@ -165,6 +184,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		if err != nil {
 			if c.redirectToGrpc(true) {
 				slog.Debug("invalid sqlite syntax, redirecting to leader", "error", err)
+				setOperationRoute(ctx, "proxied_db")
 				res, err2 := c.redirectQuery(ctx, query, args)
 				if err2 != nil {
 					return nil, errors.Join(err, err2)
@@ -221,12 +241,14 @@ LOOP:
 			}
 		}
 		if qr != nil && qr.String() != "self" {
+			setOperationRoute(ctx, "cross_shard")
 			return ha.CrossShardQuery(context.WithValue(ctx, ignoreQueryRouterKey, true), stmts[0], args, qr, func(c *sql.Conn) (driver.QueryerContext, error) {
 				return sqliteConn(c)
 			})
 		}
 	}
 	if c.connector.ProxiedDB() != nil && (modifies || c.activeTransaction) {
+		setOperationRoute(ctx, "proxied_db")
 		rows, err := c.redirectQueryToProxied(ctx, query, args)
 		if err != nil {
 			return nil, err
@@ -280,12 +302,15 @@ func isTransactionControl(stmt *ha.Statement) bool {
 	}
 }
 
-func (c *Conn) recoverTwoPhase(ctx context.Context) error {
+func (c *Conn) recoverTwoPhase(ctx context.Context) (retErr error) {
 	if ha.LocalDB(ctx) {
 		return nil
 	}
-	if recoverer, ok := c.connector.Publisher().(interface{ RecoverTwoPhaseCommits() error }); ok {
-		return recoverer.RecoverTwoPhaseCommits()
+	ctx, finish := c.telemetry.startOperation(ctx, "transaction.2pc.recover")
+	setOperationRoute(ctx, "two_phase_commit")
+	defer func() { finish(retErr) }()
+	if recoverer, ok := c.connector.Publisher().(interface{ RecoverTwoPhaseCommits(context.Context) error }); ok {
+		return recoverer.RecoverTwoPhaseCommits(ctx)
 	}
 	return nil
 }
@@ -314,6 +339,7 @@ func (c *Conn) queryLocal(ctx context.Context, query string, args []driver.Named
 	if !modifies || c.activeTransaction || !c.twoPhaseEnabled() || ha.LocalDB(ctx) {
 		return c.SQLiteConn.QueryContext(ctx, query, args)
 	}
+	setOperationRoute(ctx, "local_2pc")
 	if err := c.recoverTwoPhase(ctx); err != nil {
 		return nil, err
 	}
@@ -341,6 +367,7 @@ func (c *Conn) updateProxiedPosition(ctx context.Context) {
 }
 
 func (c *Conn) redirectExecToGrpc(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	setOperationRoute(ctx, "leader_grpc")
 	slog.Debug("Redirecting", "to", c.connector.LeaderProvider().RedirectTarget(), "query", query)
 	params := make([]*sqlv1.NamedValue, len(args))
 	for i, arg := range args {
@@ -391,6 +418,7 @@ func (c *Conn) proxiedQuerierExecer() ProxiedQuerierExecer {
 }
 
 func (c *Conn) redirectQueryToProxied(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	setOperationRoute(ctx, "proxied_db")
 	rows, err := c.proxiedQuerierExecer().QueryContext(ctx, query, toSqlValues(args)...)
 	if err != nil {
 		return nil, err
@@ -471,8 +499,13 @@ func (c *Conn) Query(query string, args []driver.Value) (driver.Rows, error) {
 	return c.QueryContext(context.Background(), query, toNamedValues(args))
 }
 
-func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (tx driver.Tx, retErr error) {
+	requestCtx := ctx
+	ctx, finish := c.telemetry.startOperation(ctx, "transaction.begin")
+	defer func() { finish(retErr) }()
+	c.context = ctx
 	if c.redirectToGrpc(true) {
+		setOperationRoute(ctx, "leader_grpc")
 		ctx, cancel := context.WithTimeout(ctx, c.connector.GrpcTimeout())
 		defer cancel()
 		select {
@@ -494,6 +527,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		}
 	}
 	if c.connector.ProxiedDB() != nil && !ha.LocalDB(ctx) {
+		setOperationRoute(ctx, "proxied_db")
 		proxiedTx, err := c.connector.ProxiedDB().BeginTx(ctx, &sql.TxOptions{
 			Isolation: sql.IsolationLevel(opts.Isolation),
 			ReadOnly:  opts.ReadOnly,
@@ -517,7 +551,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		return nil, err
 	}
 	c.activeTransaction = true
-	return &txLocal{Tx: tx, c: c, ctx: ctx}, nil
+	return &txLocal{Tx: tx, c: c, ctx: requestCtx}, nil
 }
 
 func (c *Conn) Begin() (driver.Tx, error) {
@@ -525,6 +559,7 @@ func (c *Conn) Begin() (driver.Tx, error) {
 }
 
 func (c *Conn) redirectQuery(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	setOperationRoute(ctx, "leader_grpc")
 	slog.Debug("Redirecting query", "to", c.connector.LeaderProvider().RedirectTarget(), "query", query)
 	params := make([]*sqlv1.NamedValue, len(args))
 	for i, arg := range args {
@@ -569,7 +604,10 @@ type txGRPC struct {
 	*Conn
 }
 
-func (tx *txGRPC) Commit() error {
+func (tx *txGRPC) Commit() (retErr error) {
+	ctx, finish := tx.Conn.telemetry.startOperation(tx.Conn.Context(), "transaction.commit")
+	setOperationRoute(ctx, "leader_grpc")
+	defer func() { finish(retErr) }()
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
@@ -588,7 +626,10 @@ func (tx *txGRPC) Commit() error {
 	return nil
 }
 
-func (tx *txGRPC) Rollback() error {
+func (tx *txGRPC) Rollback() (retErr error) {
+	ctx, finish := tx.Conn.telemetry.startOperation(tx.Conn.Context(), "transaction.rollback")
+	setOperationRoute(ctx, "leader_grpc")
+	defer func() { finish(retErr) }()
 	select {
 	case tx.reqCh <- &sqlv1.QueryRequest{
 		Type:          sqlv1.QueryType_QUERY_TYPE_EXEC_UPDATE,
@@ -612,8 +653,19 @@ type txLocal struct {
 	ctx context.Context
 }
 
-func (tx *txLocal) Commit() error {
+func (tx *txLocal) Commit() (retErr error) {
+	ctx := tx.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var telemetry *sqliteTelemetry
 	if tx.c != nil {
+		telemetry = tx.c.telemetry
+	}
+	ctx, finish := telemetry.startOperation(ctx, "transaction.commit")
+	defer func() { finish(retErr) }()
+	if tx.c != nil {
+		tx.c.context = ctx
 		tx.c.activeTransaction = false
 	}
 	if tx.c == nil || ha.LocalDB(tx.ctx) {
@@ -629,15 +681,17 @@ func (tx *txLocal) Commit() error {
 		err := tx.Tx.Commit()
 		return err
 	}
-	prepared, err := preparer.PrepareTwoPhaseCommit(cs)
+	setOperationRoute(ctx, "two_phase_commit")
+	prepareCtx, finishPrepare := tx.c.telemetry.startOperation(ctx, "transaction.2pc.prepare")
+	setOperationRoute(prepareCtx, "two_phase_commit")
+	prepared, err := preparer.PrepareTwoPhaseCommit(prepareCtx, cs)
+	finishPrepare(err)
 	if err != nil {
 		return errors.Join(err, tx.Tx.Rollback())
 	}
-	ctx := tx.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	err = prepared.RecordCommitDecision(func(writeCtx context.Context, query string, args ...any) error {
+	decisionCtx, finishDecision := tx.c.telemetry.startOperation(ctx, "transaction.2pc.record_decision")
+	setOperationRoute(decisionCtx, "two_phase_commit")
+	err = prepared.RecordCommitDecision(decisionCtx, func(writeCtx context.Context, query string, args ...any) error {
 		if writeCtx == nil {
 			writeCtx = ctx
 		}
@@ -648,13 +702,20 @@ func (tx *txLocal) Commit() error {
 		_, err := tx.c.SQLiteConn.ExecContext(writeCtx, query, named)
 		return err
 	})
+	finishDecision(err)
 	if err != nil {
+		abortCtx, finishAbort := tx.c.telemetry.startOperation(ctx, "transaction.2pc.abort")
+		setOperationRoute(abortCtx, "two_phase_commit")
 		abortErr := prepared.Abort()
+		finishAbort(abortErr)
 		return errors.Join(err, abortErr, tx.Tx.Rollback())
 	}
 	if err := tx.Tx.Commit(); err != nil {
 		_ = tx.Tx.Rollback()
-		committed, resolveErr := prepared.ResolveCommit()
+		resolveCtx, finishResolve := tx.c.telemetry.startOperation(ctx, "transaction.2pc.resolve")
+		setOperationRoute(resolveCtx, "two_phase_commit")
+		committed, resolveErr := prepared.ResolveCommit(resolveCtx)
+		finishResolve(resolveErr)
 		if committed {
 			clearChangeSet(tx.c.SQLiteConn)
 			publishChangeSetCDC(tx.c.connector, cs)
@@ -666,7 +727,10 @@ func (tx *txLocal) Commit() error {
 		return errors.Join(err, resolveErr)
 	}
 	clearChangeSet(tx.c.SQLiteConn)
-	commitErr := prepared.Commit()
+	commitCtx, finishCommit := tx.c.telemetry.startOperation(ctx, "transaction.2pc.commit")
+	setOperationRoute(commitCtx, "two_phase_commit")
+	commitErr := prepared.Commit(commitCtx)
+	finishCommit(commitErr)
 	publishChangeSetCDC(tx.c.connector, cs)
 	if commitErr != nil {
 		return fmt.Errorf("%w: %w", ha.ErrTwoPhaseCommitPending, commitErr)
@@ -674,7 +738,17 @@ func (tx *txLocal) Commit() error {
 	return nil
 }
 
-func (tx *txLocal) Rollback() error {
+func (tx *txLocal) Rollback() (retErr error) {
+	ctx := tx.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var telemetry *sqliteTelemetry
+	if tx.c != nil {
+		telemetry = tx.c.telemetry
+	}
+	_, finish := telemetry.startOperation(ctx, "transaction.rollback")
+	defer func() { finish(retErr) }()
 	if tx.c != nil {
 		tx.c.activeTransaction = false
 	}
@@ -809,13 +883,19 @@ type txProxied struct {
 	c *Conn
 }
 
-func (tx *txProxied) Commit() error {
+func (tx *txProxied) Commit() (retErr error) {
+	ctx, finish := tx.c.telemetry.startOperation(tx.c.Context(), "transaction.commit")
+	setOperationRoute(ctx, "proxied_db")
+	defer func() { finish(retErr) }()
 	tx.c.activeTransaction = false
 	tx.c.proxiedTxExecer = nil
 	return tx.Tx.Commit()
 }
 
-func (tx *txProxied) Rollback() error {
+func (tx *txProxied) Rollback() (retErr error) {
+	ctx, finish := tx.c.telemetry.startOperation(tx.c.Context(), "transaction.rollback")
+	setOperationRoute(ctx, "proxied_db")
+	defer func() { finish(retErr) }()
 	tx.c.activeTransaction = false
 	tx.c.proxiedTxExecer = nil
 	tx.c.currentWritePosition = tx.c.latestTransactionPosition
@@ -823,6 +903,7 @@ func (tx *txProxied) Rollback() error {
 }
 
 func (c *Conn) ResetSession(ctx context.Context) error {
+	c.context = nil
 	c.activeTransaction = false
 	c.currentWritePosition = 0
 	c.latestTransactionPosition = 0
@@ -831,6 +912,7 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 }
 
 func (c *Conn) Close() error {
+	c.context = nil
 	var err error
 	if c.grpcClientConn != nil {
 		err = c.grpcClientConn.Close()
