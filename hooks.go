@@ -1,318 +1,60 @@
 package sqlite3ha
 
 import (
-	"context"
-	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"sync"
 
 	"github.com/litesql/go-ha"
-	sqlv1 "github.com/litesql/go-ha/api/sql/v1"
 	haconnect "github.com/litesql/go-ha/connect"
 	"github.com/litesql/go-sqlite3"
 )
 
-type connHooksProvider struct {
-}
+type hooksAdapter struct{}
 
-func (p *connHooksProvider) RegisterHooks(c driver.Conn, connector *ha.Connector) (driver.Conn, error) {
-	telemetry, err := defaultSQLiteTelemetry()
-	if err != nil {
-		return nil, fmt.Errorf("initialize SQLite telemetry: %w", err)
+func (a *hooksAdapter) WrapConn(c driver.Conn, connector *ha.Connector) (ha.SQLiteConn, error) {
+	sqliteConn, ok := c.(*sqlite3.SQLiteConn)
+	if !ok {
+		return nil, fmt.Errorf("not a sqlite3 connection: %T", c)
 	}
-	sqliteConn, _ := c.(*sqlite3.SQLiteConn)
-	err = sqliteConn.RegisterFunc("ha_undo", func(seq int64) string {
-		if seq < 0 {
-			return "param must be non-negative"
-		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterNone, nil)
-		if err != nil {
-			return err.Error()
-		}
-		if seq == 0 {
-			return "undone last transaction"
-		}
-		return fmt.Sprintf("undone transactions until stream sequence %d", seq)
-	}, false)
-	if err != nil {
+	if err := sqliteConn.RegisterFunc("ha_undo", ha.UndoFunc(connector, haconnect.UndoFilterNone), false); err != nil {
 		return nil, fmt.Errorf("failed to register ha_undo function: %w", err)
 	}
-	err = sqliteConn.RegisterFunc("ha_undoe", func(seq int64) string {
-		if seq < 0 {
-			return "param must be non-negative"
-		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterEntity, nil)
-		if err != nil {
-			return err.Error()
-		}
-		if seq == 0 {
-			return "undone last transaction"
-		}
-		return fmt.Sprintf("undone entity changes until stream sequence %d", seq)
-	}, false)
-	if err != nil {
+	if err := sqliteConn.RegisterFunc("ha_undoe", ha.UndoFunc(connector, haconnect.UndoFilterEntity), false); err != nil {
 		return nil, fmt.Errorf("failed to register ha_undoe function: %w", err)
 	}
-	err = sqliteConn.RegisterFunc("ha_undot", func(seq int64) string {
-		if seq < 0 {
-			return "param must be non-negative"
-		}
-		err := connector.UndoBySeq(context.Background(), uint64(seq), haconnect.UndoFilterTransaction, nil)
-		if err != nil {
-			return err.Error()
-		}
-		if seq == 0 {
-			return "undone last transaction"
-		}
-		return fmt.Sprintf("undone transactions until stream sequence %d", seq)
-	}, false)
-	if err != nil {
+	if err := sqliteConn.RegisterFunc("ha_undot", ha.UndoFunc(connector, haconnect.UndoFilterTransaction), false); err != nil {
 		return nil, fmt.Errorf("failed to register ha_undot function: %w", err)
 	}
-	err = sqliteConn.CreateModule("ha_history", &historyModule{
-		connector: connector,
-	})
-	if err != nil {
+	if err := sqliteConn.CreateModule("ha_history", &historyModule{connector: connector}); err != nil {
 		return nil, fmt.Errorf("failed to create ha_history vtab module: %w", err)
 	}
-	conn := &Conn{
-		SQLiteConn:     sqliteConn,
-		connector:      connector,
-		telemetry:      telemetry,
-		enableRedirect: true,
-		reqCh:          make(chan *sqlv1.QueryRequest),
-		resCh:          make(chan *sqlv1.QueryResponse),
-		txseqTracker:   connector.Subscriber(),
-	}
-	enableCDCHooks(conn)
-	return conn, conn.start()
+	return sqliteConn, nil
 }
 
-func (p *connHooksProvider) DisableHooks(conn *sql.Conn) error {
-	sconn, err := haSqliteConn(conn)
-	if err != nil {
-		return err
-	}
-	sconn.RegisterPreUpdateHook(nil)
-	sconn.RegisterCommitHook(nil)
-	sconn.RegisterRollbackHook(nil)
-	sconn.enableRedirect = false
-	return nil
-}
-
-func (p *connHooksProvider) EnableHooks(conn *sql.Conn) error {
-	sconn, err := haSqliteConn(conn)
-	if err != nil {
-		return err
-	}
-	enableCDCHooks(sconn)
-	sconn.enableRedirect = true
-	return sconn.start()
-}
-
-type tableSchema struct {
-	columns, types, pkColumns []string
-}
-
-var (
-	tableSchemaCache   = make(map[string]map[string]*tableSchema)
-	tableSchemaCacheMu sync.RWMutex
-)
-
-func clearTableSchemaCache(replicationID string) {
-	tableSchemaCacheMu.Lock()
-	delete(tableSchemaCache, replicationID)
-	tableSchemaCacheMu.Unlock()
-}
-
-func getTableSchema(sconn *sqlite3.SQLiteConn, replicationID string, database string, table string) (*tableSchema, error) {
-	key := fmt.Sprintf("%s.%s", database, table)
-	tableSchemaCacheMu.RLock()
-	if replicationTables, ok := tableSchemaCache[replicationID]; ok {
-		if schema, ok := replicationTables[key]; ok {
-			tableSchemaCacheMu.RUnlock()
-			return schema, nil
-		}
-	}
-	tableSchemaCacheMu.RUnlock()
-	var schema tableSchema
-	rows, err := sconn.Query(fmt.Sprintf("SELECT name, type, pk FROM %s.PRAGMA_TABLE_INFO('%s') ORDER BY cid", database, table), nil)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for {
-		dataRow := []driver.Value{new(string), new(string), new(int64)}
-
-		err := rows.Next(dataRow)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				slog.Error("failed to read table columns", "error", err, "table", table)
-			}
-			break
-		}
-		if v, ok := dataRow[0].(string); ok {
-			schema.columns = append(schema.columns, v)
-		} else {
-			continue
-		}
-		if v, ok := dataRow[1].(string); ok {
-			schema.types = append(schema.types, v)
-		}
-		if v, ok := dataRow[2].(int64); ok && v > 0 {
-			schema.pkColumns = append(schema.pkColumns, dataRow[0].(string))
-		}
-	}
-	tableSchemaCacheMu.Lock()
-	replicationTables, ok := tableSchemaCache[replicationID]
-	if !ok {
-		replicationTables = make(map[string]*tableSchema)
-		tableSchemaCache[replicationID] = replicationTables
-	}
-	replicationTables[key] = &schema
-	tableSchemaCacheMu.Unlock()
-	return &schema, nil
-
-}
-
-func enableCDCHooks(sconn *Conn) {
-	cs := ha.NewChangeSet(sconn.connector.NodeName(), sconn.connector.ReplicationID())
-	changeSetSessionsMu.Lock()
-	changeSetSessions[sconn.SQLiteConn] = cs
-	changeSetSessionsMu.Unlock()
+func (a *hooksAdapter) EnableHooks(conn ha.SQLiteConn, cb ha.HookCallbacks) {
+	sconn := conn.(*sqlite3.SQLiteConn)
 	sconn.RegisterPreUpdateHook(func(d sqlite3.SQLitePreUpdateData) {
 		if d.TableName == ha.TwoPhaseCommitDecisionTable || d.TableName == ha.OutboxTable {
 			return
 		}
-		change, ok := getChange(&d)
-		if !ok {
-			return
+		if change, ok := getChange(&d); ok {
+			cb.OnPreUpdate(change)
 		}
-		schema, err := getTableSchema(sconn.SQLiteConn, sconn.connector.ReplicationID(), change.Database, change.Table)
-		if err != nil {
-			slog.Error("failed to read columns", "error", err, "database", change.Database, "table", change.Table)
-			return
-		}
-		change.Columns = schema.columns
-		change.PKColumns = schema.pkColumns
-		for i, t := range schema.types {
-			if t != "BLOB" {
-				if i < len(change.OldValues) && change.OldValues[i] != nil {
-					change.OldValues[i] = convert(change.OldValues[i])
-				}
-				if i < len(change.NewValues) && change.NewValues[i] != nil {
-					change.NewValues[i] = convert(change.NewValues[i])
-				}
-			}
-		}
-
-		cs.AddChange(change)
 	})
-
 	sconn.RegisterCommitHook(func() int {
-		if _, ok := sconn.connector.Publisher().(ha.TwoPhaseCommitPreparer); ok {
-			return 0
-		}
-		if err := cs.Send(sconn.Context(), sconn.connector.Publisher()); err != nil {
-			slog.Error("failed to send changeset", "error", err, "pub", fmt.Sprintf("%T", sconn.connector.Publisher()))
+		if err := cb.OnCommit(); err != nil {
 			return 1
-		}
-		if sconn.connector.CDCPublisher() != nil {
-			data := cs.DebeziumData()
-			if len(data) > 0 {
-				if err := sconn.connector.CDCPublisher().Publish(data); err != nil {
-					slog.Error("failed to send cdc", "error", err)
-					return 1
-				}
-			}
 		}
 		return 0
 	})
-	sconn.RegisterRollbackHook(func() {
-		cs.Clear()
-	})
+	sconn.RegisterRollbackHook(cb.OnRollback)
 }
 
-var (
-	changeSetSessions   = make(map[*sqlite3.SQLiteConn]*ha.ChangeSet)
-	changeSetSessionsMu sync.RWMutex
-)
-
-func addSQLChange(conn *sqlite3.SQLiteConn, sql string, args []any) error {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-
-	cs := changeSetSessions[conn]
-	if cs == nil {
-		return errors.New("no changeset session for the connection")
-	}
-	cs.AddChange(ha.Change{
-		Operation: "SQL",
-		Command:   sql,
-		Args:      args,
-	})
-	return nil
-}
-
-func removeLastChange(conn *sqlite3.SQLiteConn) error {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-
-	cs := changeSetSessions[conn]
-	if cs == nil {
-		return errors.New("no changeset session for the connection")
-	}
-	if len(cs.Changes) > 0 {
-		cs.Changes = cs.Changes[:len(cs.Changes)-1]
-	}
-	return nil
-}
-
-func snapshotChangeSet(conn *sqlite3.SQLiteConn) *ha.ChangeSet {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-
-	cs := changeSetSessions[conn]
-	if cs == nil {
-		return nil
-	}
-	snapshot := *cs
-	snapshot.Changes = append([]ha.Change(nil), cs.Changes...)
-	return &snapshot
-}
-
-func clearChangeSet(conn *sqlite3.SQLiteConn) {
-	changeSetSessionsMu.RLock()
-	defer changeSetSessionsMu.RUnlock()
-	if cs := changeSetSessions[conn]; cs != nil {
-		cs.Clear()
-	}
-}
-
-func publishChangeSetCDC(connector *ha.Connector, cs *ha.ChangeSet) {
-	if connector.CDCPublisher() == nil {
-		return
-	}
-	data := cs.DebeziumData()
-	if len(data) == 0 {
-		return
-	}
-	if err := connector.CDCPublisher().Publish(data); err != nil {
-		slog.Error("failed to send cdc after local commit", "error", err)
-	}
-}
-
-func convert(src any) any {
-	switch v := src.(type) {
-	case []byte:
-		return string(v)
-	default:
-		return src
-	}
+func (a *hooksAdapter) DisableHooks(conn ha.SQLiteConn) {
+	sconn := conn.(*sqlite3.SQLiteConn)
+	sconn.RegisterPreUpdateHook(nil)
+	sconn.RegisterCommitHook(nil)
+	sconn.RegisterRollbackHook(nil)
 }
 
 func getChange(d *sqlite3.SQLitePreUpdateData) (c ha.Change, ok bool) {

@@ -10,6 +10,13 @@ import (
 	"github.com/litesql/go-sqlite3"
 )
 
+var ErrTimedOut = ha.ErrTimedOut
+
+type (
+	Conn                 = ha.Conn
+	ProxiedQuerierExecer = ha.ProxiedQuerierExecer
+)
+
 func init() {
 	sql.Register("sqlite3-ha", &Driver{})
 }
@@ -40,7 +47,7 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	}
 
 	return ha.NewConnector(dsn, &drv, func() ha.ConnHooksProvider {
-		return &connHooksProvider{}
+		return ha.NewSQLiteHooksProvider(&hooksAdapter{})
 	}, Backup, opts...)
 }
 
@@ -52,7 +59,6 @@ func NewConnector(name string, opts ...ha.Option) (*ha.Connector, error) {
 	opts = append(opts, nameOpts...)
 	var drv sqlite3.SQLiteDriver
 	return ha.NewConnector(dsn, &drv, func() ha.ConnHooksProvider {
-		return &connHooksProvider{}
+		return ha.NewSQLiteHooksProvider(&hooksAdapter{})
 	}, Backup, opts...)
-
 }

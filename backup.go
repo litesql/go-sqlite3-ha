@@ -5,101 +5,60 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/litesql/go-ha"
+	"github.com/litesql/go-sqlite3"
 )
 
-func Backup(ctx context.Context, db *sql.DB, w io.Writer) (retErr error) {
-	telemetry, err := defaultSQLiteTelemetry()
-	if err != nil {
-		return fmt.Errorf("initialize SQLite telemetry: %w", err)
-	}
-	ctx, finish := telemetry.startBackup(ctx)
-	var written int64
-	defer func() { finish(retErr, written) }()
+func Backup(ctx context.Context, db *sql.DB, w io.Writer) error {
+	return ha.BackupWithAdapter(
+		ctx,
+		db,
+		w,
+		func(rawConn *sqlite3.SQLiteConn) ([]byte, error) {
+			return rawConn.Serialize("")
+		},
+		func(ctx context.Context, sqliteSrcConn *sqlite3.SQLiteConn, destName string) error {
+			destDb, err := sql.Open("sqlite3", destName)
+			if err != nil {
+				return err
+			}
+			defer destDb.Close()
 
-	srcConn, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer srcConn.Close()
+			destConn, err := destDb.Conn(ctx)
+			if err != nil {
+				return err
+			}
+			defer destConn.Close()
 
-	sqliteSrcConn, err := sqliteConn(srcConn)
-	if err != nil {
-		return err
-	}
-	// memdb
-	if sqliteSrcConn.GetFilename("") == "" {
-		b, err := sqliteSrcConn.Serialize("")
-		if err != nil {
-			return err
-		}
-		n, writeErr := w.Write(b)
-		written = int64(n)
-		if writeErr == nil && n != len(b) {
-			writeErr = io.ErrShortWrite
-		}
-		err = writeErr
-		return err
-	}
-	dest, err := os.CreateTemp("", "ha-*.db")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(dest.Name())
+			sqliteDestConn, err := ha.ExtractRawConn[*sqlite3.SQLiteConn](destConn)
+			if err != nil {
+				return err
+			}
 
-	destDb, err := sql.Open("sqlite3", dest.Name())
-	if err != nil {
-		return err
-	}
-	defer destDb.Close()
+			bkp, err := sqliteDestConn.Backup("main", sqliteSrcConn, "main")
+			if err != nil {
+				return err
+			}
 
-	destConn, err := destDb.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer destConn.Close()
+			for more := true; more; {
+				more, err = bkp.Step(-1)
+				if err != nil {
+					return fmt.Errorf("backup step error: %w", err)
+				}
+				if bkp.Remaining() == 0 {
+					break
+				}
+			}
 
-	sqliteDestConn, err := sqliteConn(destConn)
-	if err != nil {
-		return err
-	}
+			if err := bkp.Finish(); err != nil {
+				return fmt.Errorf("backup finish error: %w", err)
+			}
 
-	bkp, err := sqliteDestConn.Backup("main", sqliteSrcConn, "main")
-	if err != nil {
-		return err
-	}
-
-	for more := true; more; {
-		more, err = bkp.Step(-1)
-		if err != nil {
-			return fmt.Errorf("backup step error: %w", err)
-		}
-		if bkp.Remaining() == 0 {
-			break
-		}
-	}
-
-	err = bkp.Finish()
-	if err != nil {
-		return fmt.Errorf("backup finish error: %w", err)
-	}
-
-	err = bkp.Close()
-	if err != nil {
-		return fmt.Errorf("backup close error: %w", err)
-	}
-
-	err = dest.Close()
-	if err != nil {
-		return err
-	}
-
-	final, err := os.Open(dest.Name())
-	if err != nil {
-		return err
-	}
-	defer final.Close()
-
-	written, err = io.Copy(w, final)
-	return err
+			if err := bkp.Close(); err != nil {
+				return fmt.Errorf("backup close error: %w", err)
+			}
+			return nil
+		},
+	)
 }
